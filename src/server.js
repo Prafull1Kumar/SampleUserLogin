@@ -1,8 +1,15 @@
 import express from "express";
+import cors from "cors";
 import bcrypt from "bcryptjs";
 import { v4 as uuid } from "uuid";
 
 const app = express();
+
+app.use(
+  cors({
+    origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:5173",
+  })
+);
 app.use(express.json());
 
 const users = new Map(); // username -> user record kept in memory
