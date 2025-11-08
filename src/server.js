@@ -1,37 +1,11 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { v4 as uuid } from "uuid";
-import pkg from "pg";
-
-const { Pool } = pkg;
 
 const app = express();
 app.use(express.json());
 
-const pool = new Pool({
-  user: process.env.DBUSER ?? "postgres",
-  host: process.env.DBHOST ?? "localhost",
-  database: process.env.DBDATABASE ?? "postgres",
-  password: process.env.DBPASSWORD ?? "Pra@1ful",
-  port: Number(process.env.DBPORT ?? 5432),
-});
-
-const ensureUsersTable = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      password_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-};
-
-ensureUsersTable().catch((err) => {
-  console.error("Failed to initialize database:", err);
-  process.exit(1);
-});
+const users = new Map(); // username -> user record kept in memory
 
 const sanitizeUser = (userRecord) => ({
   id: userRecord.id,
@@ -49,12 +23,7 @@ app.post("/signup", async (req, res) => {
   }
 
   try {
-    const existingUser = await pool.query(
-      "SELECT id FROM users WHERE username = $1",
-      [username]
-    );
-
-    if (existingUser.rows.length > 0) {
+    if (users.has(username)) {
       return res.status(409).json({ error: "username already exists" });
     }
 
@@ -64,13 +33,10 @@ app.post("/signup", async (req, res) => {
       username,
       name,
       passwordHash,
+      createdAt: Date.now(),
     };
 
-    await pool.query(
-      `INSERT INTO users (id, username, name, password_hash)
-       VALUES ($1, $2, $3, $4)`,
-      [newUser.id, newUser.username, newUser.name, newUser.passwordHash]
-    );
+    users.set(username, newUser);
 
     return res.status(201).json({
       message: "user created",
@@ -91,11 +57,7 @@ app.post("/login", async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
-      "SELECT id, username, name, password_hash FROM users WHERE username = $1",
-      [username]
-    );
-    const userRecord = result.rows[0];
+    const userRecord = users.get(username);
 
     if (!userRecord) {
       return res.status(401).json({ error: "invalid credentials" });
@@ -133,11 +95,7 @@ app.post("/reset-password", async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
-      "SELECT id, username, name, password_hash FROM users WHERE username = $1",
-      [username]
-    );
-    const userRecord = result.rows[0];
+    const userRecord = users.get(username);
 
     if (!userRecord) {
       return res.status(404).json({ error: "user not found" });
@@ -153,10 +111,7 @@ app.post("/reset-password", async (req, res) => {
     }
 
     const newPasswordHash = await bcrypt.hash(newPassword, 10);
-    await pool.query(
-      "UPDATE users SET password_hash = $1 WHERE username = $2",
-      [newPasswordHash, username]
-    );
+    users.set(username, { ...userRecord, passwordHash: newPasswordHash });
 
     return res.json({ message: "password updated" });
   } catch (err) {
@@ -168,11 +123,7 @@ app.post("/reset-password", async (req, res) => {
 app.get("/users/:username", async (req, res) => {
   const { username } = req.params;
   try {
-    const result = await pool.query(
-      "SELECT id, username, name FROM users WHERE username = $1",
-      [username]
-    );
-    const userRecord = result.rows[0];
+    const userRecord = users.get(username);
 
     if (!userRecord) {
       return res.status(404).json({ error: "user not found" });
@@ -187,10 +138,10 @@ app.get("/users/:username", async (req, res) => {
 
 app.get("/users", async (_req, res) => {
   try {
-    const result = await pool.query(
-      "SELECT id, username, name FROM users ORDER BY created_at DESC"
+    const allUsers = Array.from(users.values()).sort(
+      (a, b) => b.createdAt - a.createdAt
     );
-    return res.json({ users: result.rows.map(sanitizeUser) });
+    return res.json({ users: allUsers.map(sanitizeUser) });
   } catch (err) {
     console.error("List users failed:", err);
     return res.status(500).json({ error: "failed to list users" });
